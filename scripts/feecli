@@ -1,0 +1,190 @@
+#!/usr/bin/env python
+import argparse
+import urllib2
+import json
+import sqlite3
+import curses
+import curses.textpad
+import locale
+import webbrowser
+
+POSTS_TO_RETRIEVE = 50000
+TOKEN = "" #Put your token here
+FEEDLY_URL = "https://cloud.feedly.com/v3/"
+userdata_id = None
+categories = []
+articles = []
+articles_in_scope = []
+
+def retrieve_categories():
+    global userdata_id
+    request = urllib2.Request(FEEDLY_URL+"categories",headers={'Authorization' : 'OAuth '+TOKEN,'Content-Type': 'application/json'})
+    body = urllib2.urlopen(request)
+    j = json.loads(body.read())
+    for i in j:
+        if(userdata_id is None):
+            userdata_id = i['id'].rsplit('/')[1]
+        c = {'label':i['label'],'sel':True}
+        categories.append(c)
+
+def retrieve_articles(category=None):
+    global articles
+    if(category is None):
+        request = urllib2.Request(FEEDLY_URL+"streams/contents?ranked=newest&count=" + str(POSTS_TO_RETRIEVE) + "&unreadOnly=false&streamId=user/" + userdata_id + "/category/global.all",headers={'Authorization' : 'OAuth '+TOKEN ,'Content-Type': 'application/json'})
+    else:
+        request = urllib2.Request(FEEDLY_URL+"streams/contents?ranked=newest&count=" + str(POSTS_TO_RETRIEVE) + "&unreadOnly=false&streamId=user/" + userdata_id + "/category/"+category,headers={'Authorization' : 'OAuth '+TOKEN , 'Content-Type': 'application/json'})
+    body = urllib2.urlopen(request)
+    j = json.loads(body.read())
+    h = j['items']
+    for i in h:
+        try:
+            article = {'title':i['title'].encode("UTF-8"),'text': i['summary']['content'].encode("UTF-8"),'category':i['categories'][0]['label'],'link':i['alternate'][0]['href']}
+        except Exception,e:
+            article = {'title':i['title'].encode("UTF-8"),'text':'','category':i['categories'][0]['label'],'link':''}
+        articles.append(article)
+
+def status_bar(stdscr,height,width,text):
+    title = "Feecli"[:width-1]
+    statusbarstr = "Feecli | 1. Feed | 2. Categories | 3. Help"
+    stdscr.attron(curses.color_pair(1))
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addstr(height-1, 0, statusbarstr)
+    stdscr.addstr(height-1, len(statusbarstr), " " * (width - len(statusbarstr) - 1))
+    stdscr.addstr(height-1, (width-len(text)-2), "|"+text)
+    stdscr.attroff(curses.color_pair(1))
+    stdscr.attroff(curses.A_BOLD)
+
+def gui(stdscr):
+    k = 0
+    cursor_x = 0
+    cursor_y = 0
+    current_tab = 1
+    stdscr.clear()
+    stdscr.refresh()
+    curses.init_pair(1,curses.COLOR_BLACK,curses.COLOR_YELLOW)
+    curses.init_pair(2,curses.COLOR_GREEN,curses.COLOR_BLACK)
+    while(k != ord('q')):
+        stdscr.clear()
+        height,width = stdscr.getmaxyx()
+        if k == ord('s'):
+            cursor_y = cursor_y + 1
+        elif k == ord('a'):
+            cursor_y = cursor_y - 1
+        elif k == curses.KEY_RIGHT:
+            cursor_x = cursor_x + 1
+        elif k == curses.KEY_LEFT:
+            cursor_x = cursor_x - 1
+        elif k == ord('1'):
+            current_tab = 1
+        elif k == ord('2'):
+            current_tab = 2
+        elif k == ord('3'):
+            current_tab = 4
+        elif k == ord('r'):
+            if(current_tab == 1):
+                current_tab = 3
+        elif k == ord('b'):
+            if(current_tab == 3):
+                current_tab = 1
+        elif k == ord('o'):
+            if(current_tab == 1):
+                link = articles_in_scope[cursor_y]['link']
+                webbrowser.open(link, new=2)
+        cursor_x = max(0,cursor_x)
+        cursor_x = min(width-1,cursor_x)
+        cursor_y = max(0,cursor_y)
+        start_x_articles = 2
+        start_y = 1
+        page = 0
+        array_offset = 0
+        #Creating first tab
+        if(current_tab == 1):
+            current_y_articles = start_y
+            articles_in_scope = []
+            for a in articles:
+                for x in categories:
+                    if(x['label'] == a['category']):
+                        if(x['sel'] is True):
+                            articles_in_scope.append(a)
+            cursor_y = min(len(articles_in_scope)-1,cursor_y)
+            #Handling scrolling
+            if(len(articles_in_scope)>height-2):
+                page = (cursor_y / (height-2))
+                if(page>0):
+                    array_offset = cursor_y+1-(height-2)
+                else:
+                    array_offset = 0
+            for a in articles_in_scope[array_offset:array_offset+(height-2)]:
+                if((cursor_y+start_y)  == current_y_articles+array_offset):
+                    stdscr.attron(curses.color_pair(1))
+                    stdscr.addstr(current_y_articles,start_x_articles,"[")
+                    stdscr.addstr(current_y_articles,start_x_articles+1,a['category'])
+                    stdscr.addstr(current_y_articles,start_x_articles+1+len(a['category']),"] "+a['title'][:width-5-len(a['category'])])
+                    stdscr.attroff(curses.color_pair(1))
+                else:
+                    stdscr.addstr(current_y_articles,start_x_articles,"[")
+                    stdscr.attron(curses.color_pair(2))
+                    stdscr.addstr(current_y_articles,start_x_articles+1,a['category'])
+                    stdscr.attroff(curses.color_pair(2))
+                    stdscr.addstr(current_y_articles,start_x_articles+1+len(a['category']),"] "+a['title'][:width-5-len(a['category'])])
+                current_y_articles += 1
+            status_bar(stdscr,height,width,str(len(articles_in_scope)))
+        #Creating second tab
+        elif(current_tab == 2):
+            current_y_categories = start_y
+            cursor_y = min(len(categories)-1,cursor_y)
+            stdscr.attroff(curses.color_pair(1))
+            stdscr.attroff(curses.A_BOLD)
+            for a in categories:
+                if((cursor_y+start_y) == current_y_categories):
+                    stdscr.attron(curses.color_pair(1))
+                    stdscr.addstr(current_y_categories,start_x_articles,a['label'].encode("UTF-8")[:width-2])
+                    if(k == ord('m')):
+                        a['sel'] = not a['sel']
+                    stdscr.attroff(curses.color_pair(1))
+                else:
+                    stdscr.addstr(current_y_categories,start_x_articles,a['label'].encode("UTF-8")[:width-2])
+                if(a['sel'] is True):
+                    stdscr.addstr(current_y_categories,start_x_articles+30,'[*]')
+                else:
+                    stdscr.addstr(current_y_categories,start_x_articles+30,'[ ]')
+                current_y_categories += 1
+            status_bar(stdscr,height,width,str(len(categories)))
+        #Creating third tab
+        elif(current_tab == 3):
+            text = articles_in_scope[cursor_y]['text']
+            n = len(text) / width
+            r = len(text) % width
+            if(r>0):
+                n = n+1
+            y = 1
+            for i in range(0,n):
+                stdscr.addstr(y,0,text[i*width:i*width+width])
+                y+=1
+        #Creating fourth tab
+        elif(current_tab == 4):
+                stdscr.addstr(1,1,"a")
+                stdscr.addstr(1,4,"Move up")
+                stdscr.addstr(3,1,"s")
+                stdscr.addstr(3,4,"Move down")
+                stdscr.addstr(5,1,"r")
+                stdscr.addstr(5,4,"Read the article on the terminal")
+                stdscr.addstr(7,1,"b")
+                stdscr.addstr(7,4,"Go back")
+                stdscr.addstr(9,1,"o")
+                stdscr.addstr(9,4,"Open article on the browser")
+                stdscr.addstr(11,1,"m")
+                stdscr.addstr(11,4,"Select/Unselect category")
+                status_bar(stdscr,height,width,"X")
+        stdscr.refresh()
+        k = stdscr.getch()
+
+
+if __name__ == '__main__':
+    locale.setlocale(locale.LC_ALL, '')
+    retrieve_categories()
+    retrieve_articles()
+    stdscr = curses.initscr()
+    curses.start_color()
+    curses.use_default_colors()
+    gui(stdscr)
